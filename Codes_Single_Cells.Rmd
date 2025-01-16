@@ -1,0 +1,870 @@
+---
+title: "Codes_Single_Cells"
+author: "Nam/Brandon"
+date: "6/12/2024"
+output: html_document
+---
+
+## R Markdown
+
+## Load library
+
+```{r, echo=FALSE}
+library(dplyr)
+library(Seurat)
+library(patchwork)
+library(SingleR)
+library(celldex)
+library(ggplot2)
+library(gprofiler2)
+library(edgeR)
+library(scran)
+library(SingleCellExperiment)
+library(ggrepel)
+library(clusterProfiler)
+library(ReactomePA)
+library(DOSE)
+library(org.Mm.eg.db) 
+library(pheatmap)
+```
+
+## Set up functions
+```{r}
+process_seurat <- function(seurat_obj) {
+  # Find variable features
+  seurat_obj <- FindVariableFeatures(seurat_obj, selection.method = "vst", nfeatures = 2000)
+  
+  # Scaling data
+  all.genes <- rownames(seurat_obj)
+  seurat_obj <- ScaleData(seurat_obj, features = all.genes)
+  
+  # Run PCA
+  seurat_obj <- RunPCA(seurat_obj, features = VariableFeatures(object = seurat_obj))
+  
+  # Find cell clusters
+  seurat_obj <- FindNeighbors(seurat_obj, dims = 1:10)
+  seurat_obj <- FindClusters(seurat_obj, resolution = 0.5)
+  
+  # Run UMAP
+  seurat_obj <- RunUMAP(seurat_obj, dims = 1:10)
+  
+  # Find markers for each cluster
+  cluster_markers <- FindAllMarkers(seurat_obj, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+  
+  return(list(seurat_obj = seurat_obj, cluster_markers = cluster_markers))
+}
+
+```
+
+## Load data
+
+```{r}
+#SC_LRRC15_Stroma <- readRDS("/gstore/project/nam_metadata_analysis/LTBR_scRNA/lrrc15-ltb_Stroma-only.RDS")
+SC_LRRC15_Stroma_clean <- readRDS("/gstore/project/brandon_share/lrrc15-ltb-kinetic/output/working_data/lrrc15-ltb_Stroma-only_QCd_annotated.RDS")
+#SC_LRRC15_Immune <- readRDS("/gstore/project/nam_metadata_analysis/LTBR_scRNA/lrrc15-ltb_Immune-only.RDS")
+SC_LRRC15_Immune <- readRDS("/gstore/project/brandon_share/lrrc15-ltb-kinetic/output/working_data/lrrc15-ltb_Immune-only_QCd_annotated.RDS")
+```
+## Create New Annotation
+```{r}
+# Create a new annotation column (or modify an existing one)
+SC_LRRC15_Stroma_clean$DE_cluster <- SC_LRRC15_Stroma_clean$seurat_annot_all_02
+
+# Combine cell types"
+SC_LRRC15_Stroma_clean$DE_cluster[SC_LRRC15_Stroma_clean$seurat_annot_all_02 %in% c("C05_HEV-high", 
+              "C05_HEV-low","C05_bEC")] <- "Endothelial_Cells"
+SC_LRRC15_Stroma_clean$DE_cluster[SC_LRRC15_Stroma_clean$seurat_annot_all_02 %in% c("C00_Fib_PanTissue", 
+              "C01_Fib_iCAF","C03_Fib")] <- "Non_lrrc15_CAF"
+SC_LRRC15_Stroma_clean$DE_cluster[SC_LRRC15_Stroma_clean$seurat_annot_all_02 %in% c("C02_Fib_TGFbCAF")] <- "lrrc15_CAF"
+SC_LRRC15_Stroma_clean$DE_cluster[SC_LRRC15_Stroma_clean$seurat_annot_all_02 %in% c("C04_SMC")] <- "Pericytes"
+
+
+# Create a new annotation column (or modify an existing one)
+SC_LRRC15_Immune$DE_cluster <- SC_LRRC15_Immune$seurat_annot_all_02
+
+# Combine cell types"
+SC_LRRC15_Immune$DE_cluster[SC_LRRC15_Immune$seurat_annot_all_02 %in% c("C00_Macrophage","C01_Macrophage", 
+              "C02_Macrophage","C04_Macrophage","C05_Macrophage","C12_Macrophage")] <- "Macrophage"
+SC_LRRC15_Immune$DE_cluster[SC_LRRC15_Immune$seurat_annot_all_02 %in% c("C08_DC_moDC", 
+              "C10_DC_Ccr7+")] <- "Dendritic_Cells"
+SC_LRRC15_Immune$DE_cluster[SC_LRRC15_Immune$seurat_annot_all_02 %in% c("T00_CD4_Treg","T02_CD8_Tex",
+              "T03_Naive","T04_CD8_Tem","T05_Cd4_Th1","T06_Cd4_Pd1+"  )] <- "CD4_CD8_T_cells"
+SC_LRRC15_Immune$DE_cluster[SC_LRRC15_Immune$seurat_annot_all_02 %in% c("C14_B cell")] <- "B_cells"
+
+```
+## QC
+
+```{r}
+# Violin Plot
+VlnPlot(SC_LRRC15_Stroma, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+# Define the grouping column as a variable
+grouping_column <- "Treatment.Group.Name"
+# Set the active identity class to the new grouping column
+Idents(SC_LRRC15_Stroma) <- SC_LRRC15_Stroma@meta.data[[grouping_column]]
+# Create a table of cell counts for the new grouping
+cell_counts <- table(Idents(SC_LRRC15_Stroma))
+# Convert to a dataframe for ggplot
+cell_counts_df <- as.data.frame(cell_counts)
+colnames(cell_counts_df) <- c("Group", "Number_of_Cells")
+# Plotting
+ggplot(cell_counts_df, aes(x = Group, y = Number_of_Cells)) +
+  geom_bar(stat = "identity", width = 0.5, fill= "dodgerblue4") + # Adjust the width here (0.7 is just an example)
+  theme_minimal() +
+  labs(title = "Number of Cells", x = "Treatment Group", y = "Number of Cells") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+
+## Filter
+
+```{r}
+# Filter 
+SC_LRRC15_Stroma <- subset(SC_LRRC15_Stroma, subset = nFeature_RNA > 200 & nCount_RNA > 500 & percent.mt < 10)
+
+# Define the clusters you want to remove
+cells_to_remove <- c("Doublet", "Negative")  # Remove by hash assignment
+# Set the active identity class
+Idents(SC_LRRC15_Stroma) <- SC_LRRC15_Stroma@meta.data$Hash_assignment
+# Subset the Seurat object to exclude the specified clusters
+SC_LRRC15_Stroma <- subset(SC_LRRC15_Stroma, idents = cells_to_remove,invert = TRUE)
+
+
+# Verify the clusters have been removed
+table(Idents(SC_LRRC15_Stroma))
+```
+
+
+## Normalize, Scale, Find Variables
+
+```{r}
+# Normalization
+SC_LRRC15_Stroma <- NormalizeData(SC_LRRC15_Stroma, normalization.method = "LogNormalize", scale.factor = 10000)
+# Find Variables
+SC_LRRC15_Stroma <- FindVariableFeatures(SC_LRRC15_Stroma, selection.method = "vst", nfeatures = 2000)
+# Scale Data
+all.genes <- rownames(SC_LRRC15_Stroma)
+SC_LRRC15_Stroma <- ScaleData(SC_LRRC15_Stroma, features = all.genes)
+```
+## PCA and Cell Clusters
+
+```{r}
+# Run PCA
+SC_LRRC15_Stroma <- RunPCA(SC_LRRC15_Stroma, 
+                                    features = VariableFeatures(object = SC_LRRC15_Stroma))
+
+# Find cell cluster
+SC_LRRC15_Stroma <- FindNeighbors(SC_LRRC15_Stroma, dims = 1:10)
+SC_LRRC15_Stroma <- FindClusters(SC_LRRC15_Stroma, resolution = 0.5)
+# UMAP
+SC_LRRC15_Stroma <- RunUMAP(SC_LRRC15_Stroma, dims = 1:10)
+
+# Plot the UMAP
+DimPlot(SC_LRRC15_Stroma, reduction = "umap", group.by = "seurat_clusters")
+
+# Find markers for each cluster
+cluster_markers <- FindAllMarkers(SC_LRRC15_Stroma, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+```
+## SingleR Cell Identification
+```{r}
+mouse_rna <- MouseRNAseqData()
+
+# Get the normalized data matrix from Seurat object
+data <- GetAssayData(SC_LRRC15_Stroma, slot = "data")
+
+# Run SingleR
+pred <- SingleR(test = data, ref = mouse_rna , labels = mouse_rna $label.main)
+table(pred$labels)
+# Add SingleR predictions to Seurat metadata
+SC_LRRC15_Stroma$SingleR.labels <- pred$labels
+
+# Visualize the annotations
+DimPlot(SC_LRRC15_Stroma, group.by = "SingleR.labels")
+```
+## Add Modulescore
+```{r}
+mmus_s = gorth(cc.genes.updated.2019$s.genes, source_organism = "hsapiens", 
+               target_organism = "mmusculus")$ortholog_name
+mmus_g2m = gorth(cc.genes.updated.2019$g2m.genes, source_organism = "hsapiens", 
+                 target_organism = "mmusculus")$ortholog_name
+
+smooth_muscle <- c("Acta2", "Myh11", "Tagln", "Cnn1", "Des", "Myl9", "Pdgfra", "Pdgfrb", "Actg2", "Myocd")
+
+genes_list <- mget(c("mmus_s","mmus_g2m","smooth_muscle"), envir = .GlobalEnv)
+
+# Calculate module scores
+SC_LRRC15_Stroma <- AddModuleScore(
+  object = SC_LRRC15_Stroma,
+  features = list(S = mmus_s, G2M = mmus_g2m, SM = smooth_muscle ),
+  name = "Module"
+)
+FeaturePlot(SC_LRRC15_Stroma, features = "Module1", pt.size = 1) +
+  ggtitle(" ")
+# Calculate cell cycle scores
+SC_LRRC15_Stroma <- CellCycleScoring(object = SC_LRRC15_Stroma,
+                                              s.features = mmus_s, 
+                                              g2m.features = mmus_g2m, set.ident = TRUE)
+```
+
+## Remove/filter Cells
+```{r}
+# Define the clusters you want to remove
+cells_to_remove <- c("6","9","10")  # Replace with the cluster numbers you want to remove
+# Use Ident group to filter
+Idents(SC_LRRC15_Stroma) <- SC_LRRC15_Stroma@meta.data$seurat_clusters
+# Subset the Seurat object to exclude the specified clusters
+SC_LRRC15_Stroma_clean <- subset(SC_LRRC15_Stroma, idents = cells_to_remove,invert = TRUE)
+
+
+# Verify the clusters have been removed
+table(Idents(SC_LRRC15_Stroma_clean))
+# Redo normalize/scale/find markers
+result <- process_seurat(SC_LRRC15_Stroma_clean)
+```
+
+
+## Plot UMAP for filter Seurat object
+
+```{r}
+
+SC_LRRC15_Stroma_clean <- result$seurat_obj 
+SC_LRRC15_Stroma_clean <- FindClusters(SC_LRRC15_Stroma_clean, resolution = 0.3) ## findclusters resolution = 0.3
+cluster_markers_clean <- result$cluster_markers
+
+cluster_markers_clean <- FindAllMarkers(SC_LRRC15_Stroma_clean, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+top_markers <- cluster_markers_clean %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC)
+
+DimPlot(SC_LRRC15_Stroma_clean, reduction = "umap")
+FeaturePlot(SC_LRRC15_Stroma_clean, features = "Myh11", reduction = "umap")
+
+# Get the normalized data matrix from Seurat object
+data_clean <- GetAssayData(SC_LRRC15_Stroma_clean, slot = "data")
+
+# Run SingleR
+pred_clean <- SingleR(test = data_clean, ref = mouse_rna , labels = mouse_rna $label.main)
+table(pred_clean$labels)
+# Add SingleR predictions to Seurat metadata
+SC_LRRC15_Stroma_clean$SingleR.labels <- pred_clean$labels
+# Visualize the annotations
+DimPlot(SC_LRRC15_Stroma_clean, group.by = "SingleR.labels")
+```
+
+
+## Dot plot
+```{r}
+# View the top markers for each cluster
+top_markers <- cluster_markers_clean %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC)
+dot_plot <- DotPlot(SC_LRRC15_Stroma_clean, 
+                    features = unique(top_markers$gene),dot.scale = 3)
+
+# Print the plot
+dot_plot + RotatedAxis() + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Optionally, you can customize the plot further
+dot_plot + scale_color_gradient(low = "lightblue", high = "red") +
+  RotatedAxis() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "TGFb_CAF genes", 
+       x = "Genes", 
+       y = "Cell Clusters")
+
+# Example: Relabeling 10 clusters with new names
+# Let's say we have a larger number of clusters and want to relabel them
+Idents(SC_LRRC15_Stroma_clean) <- SC_LRRC15_Stroma_clean@meta.data$seurat_clusters
+current_idents <- Idents(SC_LRRC15_Stroma_clean)
+
+new_labels <- c("Fibroblast","Fibroblast","Fibroblast","Myofibroblast","Fibroblast",
+                "Endothelial cells","Pericytes","Epithelial cells")
+                
+new_cluster_labels <- setNames(new_labels, levels(current_idents))
+# Relabel the clusters
+SC_LRRC15_Stroma_clean <- RenameIdents(SC_LRRC15_Stroma_clean, new_cluster_labels)
+# Add active identities to metadata
+SC_LRRC15_Stroma_clean@meta.data$cell_labels <- Idents(SC_LRRC15_Stroma_clean)
+# Plot the UMAP with the new labels
+DimPlot(SC_LRRC15_Stroma_clean, reduction = "umap", label = TRUE) +
+  ggtitle("UMAP with Relabeled Clusters") +
+  NoLegend()
+```
+
+## Micellaneous
+```{r}
+highlight_cluster <- "10"
+SC_LRRC15_Stroma_clean$highlight <- ifelse(SC_LRRC15_Stroma_clean$seurat_clusters == highlight_cluster, highlight_cluster, "Other")
+
+# Create a UMAP plot with the highlighted cluster
+DimPlot(SC_LRRC15_Stroma_clean, group.by = "highlight", cols = c("red", "grey")) + 
+  labs(title = paste("Highlighting", highlight_cluster, "Cluster")) + 
+  theme(legend.position = "bottom")
+
+
+## Violin Plot
+Idents(SC_LRRC15_Stroma_clean) <- SC_LRRC15_Stroma_clean$group_time
+
+# Create a violin plot for a specific gene
+VlnPlot(SC_LRRC15_Stroma_clean, features = "Cxcl13", pt.size = 0.5) +
+  ggtitle("Cxcl13 Expression") +
+  theme_minimal()
+```
+
+
+## Milo
+```{r}
+library(miloR)
+library(SingleCellExperiment)
+library(scater)
+library(scran)
+
+sce_subset <- subset(SC_LRRC15_Stroma_clean, subset = DE_cluster  %in% 
+                       c("Endothelial_Cells","Non_lrrc15_CAF","lrrc15_CAF","Pericytes"))
+# Access the meta.data slot of the Seurat object
+meta_data <- sce_subset@meta.data
+# Create a new column 'Unique_ID' by combining 'group_time' and 'Hash_assignment'
+meta_data$Unique_ID <- paste(meta_data$group_time, meta_data$Hash_assignment, sep = "_")
+# Assign the updated meta.data back to the Seurat object
+sce_subset@meta.data <- meta_data
+
+stroma_sce <- as.SingleCellExperiment(sce_subset)
+milo.stroma <- Milo(stroma_sce)
+# Build neighborhood
+milo.stroma <- buildGraph(milo.stroma, k=20, d=30)
+milo.stroma <- makeNhoods(milo.stroma, k=20, d=30, refined=TRUE, prop=0.2)
+# Calculate distance
+milo.stroma <- calcNhoodDistance(milo.stroma, d=30)
+# Count Cells
+milo.stroma  <- countCells(milo.stroma , meta.data = data.frame(colData(milo.stroma )), samples="Unique_ID")
+# Differential 
+design.stroma <- data.frame(colData(milo.stroma))[,c("Unique_ID", "group_time", "Hash_assignment")]
+design.stroma <- distinct(design.stroma)
+rownames(design.stroma) <- design.stroma$Unique_ID
+## Reorder rownames to match columns of nhoodCounts(milo)
+design.stroma <- design.stroma[colnames(nhoodCounts(milo.stroma)), , drop=FALSE]
+
+contrast.1 <- c("group_timeLRRC15.LT_D7 - group_timeControl_D7") # define comparison
+
+# Differential analysis
+da_results <- testNhoods(milo.stroma, design = ~ 0 + group_time, design.df = design.stroma, 
+                         model.contrasts = contrast.1,fdr.weighting="graph-overlap", norm.method="TMM")
+da_results <- annotateNhoods(milo.stroma, da_results, coldata_col = "DE_cluster")
+# Plot 
+milo.stroma <- buildNhoodGraph(milo.stroma)
+
+plotUMAP(milo.stroma, colour_by="DE_cluster") + plotNhoodGraphDA(milo.stroma, da_results, alpha=0.05) +
+  plot_layout(guides="collect") 
+
+
+plotDAbeeswarm(groupNhoods(milo.stroma, da_results, max.lfc.delta = 0.5), group.by = "DE_cluster")
+
+
+# Assuming you have a Seurat object with UMAP already calculated, transfer the coordinates to milo.stroma
+umap_coordinates <- Embeddings(seurat_subset, reduction = "umap")
+
+# Step 2: Store the UMAP layout in the reducedDim slot of the milo object
+reducedDim(milo.stroma, "umap") <- umap_coordinates
+
+## Find groups
+da_results <- groupNhoods(milo.stroma, da_results, max.lfc.delta = 2)
+
+plotNhoodGroups(milo.stroma, da_results, layout="umap", label = TRUE) 
+# Plot beeswarm for Nhoodgroup
+plotDAbeeswarm(da_results, "NhoodGroup")
+
+
+
+
+
+```
+
+
+
+
+
+## pseudoBulkDGE scran Immune
+```{r}
+seurat_subset_IM <- subset(SC_LRRC15_Immune, subset = DE_cluster  %in% 
+                       c("Macrophage","Dendritic_Cells","CD4_CD8_T_cells"))
+#sce_subset <- as.SingleCellExperiment(sce_subset)
+
+#sce_full$group <- gsub("LRRC15/LT", "LRRC15", sce_full$group)
+# Use grep to find indices where the annotation contains D7, D14, or D21
+matching_indices <- grepl("D7|D14|D21", seurat_subset_IM$group_time)
+
+# Subset sce_full based on the matching indices
+sce_subset_IM <- seurat_subset_IM  [, matching_indices]
+sce_subset_IM <- as.SingleCellExperiment(sce_subset_IM)
+
+sce_subset_IM$cluster_time <- paste(sce_subset_IM$DE_cluster, sce_subset_IM$time, sep = "_")
+
+# Create the info DataFrame with mice group, cell clusters, and treatment group
+info <- DataFrame(
+  mice_group = sce_subset_IM$Hash_assignment,         # Mice group metadata
+  cluster = sce_subset_IM$cluster_time,
+  Treatment = sce_subset_IM$group)        # Cell cluster labels    
+
+# Perform sumCountsAcrossCells based on the combined metadata
+pseudo <- sumCountsAcrossCells(sce_subset_IM, info)
+pseudo$Treatment <- droplevels(pseudo$Treatment)
+# Set the reference level for the Treatment factor
+pseudo$Treatment <- relevel(as.factor(pseudo$Treatment), ref = "Control")
+design <- model.matrix(~ Treatment, data = pseudo@colData)
+
+
+# You can now use any of these contrasts in the pseudoBulkDGE function
+out <- pseudoBulkDGE(pseudo, 
+   label = pseudo$cluster,  
+   design = ~ Treatment,
+   coef = 2,
+   method = "edgeR"
+)
+# Assuming 'out' is a list of dataframes, each corresponding to different cell types
+for (cell_type in names(out@listData)) {
+   # Extract the current result table for a cell type as a dataframe
+  df <- as.data.frame(out@listData[[cell_type]]@listData)
+  # Replace rownames with the rownames from 'pseudo' (which contains the genes)
+  df$gene <- rownames(pseudo)
+  # Add the 'combined_score' column (logFC * -log10(PValue))
+  df <- df %>%
+    mutate(combined_score = sign(logFC) * -log10(PValue))
+  # Save the updated dataframe back into the 'out' list
+  out@listData[[cell_type]]@listData <- df
+}
+
+
+
+table_list <- list()
+# Loop over the elements in out@listData and convert each to a dataframe
+for (table_name in names(out@listData)) {
+  # Extract the table and convert it to a dataframe
+  table_list[[table_name]] <- as.data.frame(out@listData[[table_name]])
+}
+
+# Make volcano plot
+# Calculate the maximum absolute value of logFC across all dataframes
+max_logFC_list <- lapply(table_list, function(df) max(abs(df$logFC), na.rm = TRUE))
+for (table_name in names(table_list)) {
+  # Get the dataframe from the list
+  df_DE <- table_list[[table_name]]
+  # Get the maximum logFC for the current table
+  max_logFC <- max_logFC_list[[table_name]]
+  # Filter top genes based on p-value
+  top_genes <- df_DE %>%
+    filter(PValue < 0.01) %>%
+    arrange(PValue) %>%
+    slice_head(n = 50)  # Select the top 50 significant genes
+  # Create the volcano plot
+  plot <- ggplot(df_DE, aes(x = logFC, y = -log10(PValue))) +
+    geom_point(aes(color = PValue < 0.01), size = 0.5) +
+    geom_text_repel(data = top_genes, aes(label = gene), size = 2.5, max.overlaps = 100) +
+    theme_minimal() +
+    ggtitle(paste("Volcano Plot:", table_name)) +  # Use table name as the plot title
+    scale_x_continuous(limits = c(-max_logFC, max_logFC))  # Set symmetric x-axis limits # Use table name as the plot title
+  # Display the plot
+  print(plot)
+  # Optionally, save the plot as a file
+  #ggsave(filename = paste0("/gstore/project/nam_metadata_analysis/LTBR_scRNA/Figures/"
+                            #, "volcano_Immune_", table_name, ".png"), plot)
+}
+
+## Sort table
+for (name in names(table_list)) {
+  # Sort each table by the specified column (e.g., "combined_score")
+  table_list[[name]] <- table_list[[name]][order(-table_list[[name]]$combined_score), ]
+}
+## Split tables into each variable
+table_list <- lapply(table_list, function(df) na.omit(df))
+for (name in names(table_list)) {
+  assign(paste0("df_", name), table_list[[name]])
+}
+
+############## Make pathway plots
+go_enrich_mouse <- list()
+# Loop through each dataframe in table_list
+for (name in names(table_list)) {
+  # Extract the first 100 genes from the dataframe
+  genes <- table_list[[name]] %>%
+  filter(PValue < 0.05) %>%
+  head(100) %>%
+  pull(gene)
+  
+
+  # Perform GO enrichment analysis using enrichGO
+  go_enrich_mouse[[name]] <- enrichGO(
+    gene         = genes,
+    OrgDb        = org.Mm.eg.db,
+    keyType      = "SYMBOL",
+    ont          = "BP",  # Biological Process
+    pvalueCutoff = 0.05,
+    qvalueCutoff = 0.05
+  )
+  
+  # Create the dotplot for the enrichment results
+  p <- dotplot(go_enrich_mouse[[name]], showCategory = 10) +
+    ggtitle(paste0("GO Enrichment for Down Genes ", name)) +
+    theme(
+      plot.title = element_text(size = 9),        # Set title size
+      axis.text = element_text(size = 6),          # Set axis text size
+      axis.title = element_text(size = 8)          # Set axis label size
+    )
+  #print(p)
+  # Save the dotplot to a file with custom dimensions
+  #ggsave(filename = paste0("/gstore/project/nam_metadata_analysis/LTBR_scRNA/Figures/GO_Figures/dotplot_DOWN_",name, ".png"),plot = p,width = 7, height = 7, dpi = 300)  
+}
+
+
+# Create an empty list to store the result dataframes
+results_list <- list()
+
+# Loop through each element in go_enrich_mouse
+for (name in names(go_enrich_mouse)) {
+  # Check if the object is not NULL to avoid errors
+  if (!is.null(go_enrich_mouse[[name]])) {
+    # Convert the result slot of the enrichGO object to a dataframe
+    results_list[[name]] <- as.data.frame(go_enrich_mouse[[name]]@result)
+  }
+}
+
+```
+
+
+
+
+## pseudoBulkDGE scran Stroma
+```{r}
+seurat_subset <- subset(SC_LRRC15_Stroma_clean, subset = DE_cluster  %in% 
+                       c("Endothelial_Cells","Non_lrrc15_CAF","lrrc15_CAF","Pericytes"))
+#sce_subset <- as.SingleCellExperiment(sce_subset)
+
+#sce_full$group <- gsub("LRRC15/LT", "LRRC15", sce_full$group)
+# Use grep to find indices where the annotation contains D7, D14, or D21
+matching_indices <- grepl("D7|D14|D21", seurat_subset$group_time)
+
+# Subset sce_full based on the matching indices
+sce_subset  <- seurat_subset [, matching_indices]
+sce_subset <- as.SingleCellExperiment(sce_subset)
+
+sce_subset$cluster_time <- paste(sce_subset$DE_cluster, sce_subset$time, sep = "_")
+
+# Create the info DataFrame with mice group, cell clusters, and treatment group
+info <- DataFrame(
+  mice_group = sce_subset$Hash_assignment,         # Mice group metadata
+  cluster = sce_subset$cluster_time,
+  Treatment = sce_subset$group)        # Cell cluster labels    
+
+# Perform sumCountsAcrossCells based on the combined metadata
+pseudo <- sumCountsAcrossCells(sce_subset, info)
+pseudo$Treatment <- droplevels(pseudo$Treatment)
+# Set the reference level for the Treatment factor
+pseudo$Treatment <- relevel(as.factor(pseudo$Treatment), ref = "Control")
+design <- model.matrix(~ Treatment, data = pseudo@colData)
+
+
+# You can now use any of these contrasts in the pseudoBulkDGE function
+out <- pseudoBulkDGE(pseudo, 
+   label = pseudo$cluster,  
+   design = ~ Treatment,
+   coef = 2,
+   method = "edgeR"
+)
+# Assuming 'out' is a list of dataframes, each corresponding to different cell types
+for (cell_type in names(out@listData)) {
+   # Extract the current result table for a cell type as a dataframe
+  df <- as.data.frame(out@listData[[cell_type]]@listData)
+  # Replace rownames with the rownames from 'pseudo' (which contains the genes)
+  df$gene <- rownames(pseudo)
+  # Add the 'combined_score' column (logFC * -log10(PValue))
+  df <- df %>%
+    mutate(combined_score = sign(logFC) * -log10(PValue))
+  # Save the updated dataframe back into the 'out' list
+  out@listData[[cell_type]]@listData <- df
+}
+
+
+
+table_list <- list()
+# Loop over the elements in out@listData and convert each to a dataframe
+for (table_name in names(out@listData)) {
+  # Extract the table and convert it to a dataframe
+  table_list[[table_name]] <- as.data.frame(out@listData[[table_name]])
+}
+
+# Make Volcano plot
+# Calculate the maximum absolute value of logFC across all dataframes
+max_logFC_list <- lapply(table_list, function(df) max(abs(df$logFC), na.rm = TRUE))
+for (table_name in names(table_list)) {
+  # Get the dataframe from the list
+  df_DE <- table_list[[table_name]]
+  # Get the maximum logFC for the current table
+  max_logFC <- max_logFC_list[[table_name]]
+  # Filter top genes based on p-value
+  top_genes <- df_DE %>%
+    filter(PValue < 0.01) %>%
+    arrange(PValue) %>%
+    slice_head(n = 50)  # Select the top 50 significant genes
+  # Create the volcano plot
+  plot <- ggplot(df_DE, aes(x = logFC, y = -log10(PValue))) +
+    geom_point(aes(color = PValue < 0.01), size = 0.5) +
+    geom_text_repel(data = top_genes, aes(label = gene), size = 2.5, max.overlaps = 100) +
+    theme_minimal() +
+    ggtitle(paste("Volcano Plot:", table_name)) +  # Use table name as the plot title
+    scale_x_continuous(limits = c(-max_logFC, max_logFC))  # Set symmetric x-axis limits # Use table name as the plot title
+  # Display the plot
+  print(plot)
+  # Optionally, save the plot as a file
+  #ggsave(filename = paste0("/gstore/project/nam_metadata_analysis/LTBR_scRNA/Figures/"
+                            #, "volcano_Immune_", table_name, ".png"), plot)
+}
+
+## Sort table
+for (name in names(table_list)) {
+  # Sort each table by the specified column (e.g., "combined_score")
+  table_list[[name]] <- table_list[[name]][order(-table_list[[name]]$combined_score), ]
+}
+## Split tables into each variable
+table_list <- lapply(table_list, function(df) na.omit(df))
+for (name in names(table_list)) {
+  assign(paste0("df_", name), table_list[[name]])
+}
+
+############## Make pathway plots
+go_enrich_mouse <- list()
+# Loop through each dataframe in table_list
+for (name in names(table_list)) {
+  # Extract the first 100 genes from the dataframe
+  genes <- tail(table_list[[name]]$gene, 100)
+  
+  # Perform GO enrichment analysis using enrichGO
+  go_enrich_mouse[[name]] <- enrichGO(
+    gene         = genes,
+    OrgDb        = org.Mm.eg.db,
+    keyType      = "SYMBOL",
+    ont          = "BP",  # Biological Process
+    pvalueCutoff = 0.05,
+    qvalueCutoff = 0.05
+  )
+  
+  # Create the dotplot for the enrichment results
+  p <- dotplot(go_enrich_mouse[[name]], showCategory = 20) +
+    ggtitle(paste0("GO Enrichment for Up Genes ", name)) +
+    theme(
+      plot.title = element_text(size = 9),        # Set title size
+      axis.text = element_text(size = 6),          # Set axis text size
+      axis.title = element_text(size = 8)          # Set axis label size
+    )
+  
+  # Save the dotplot to a file with custom dimensions
+  #ggsave(filename = paste0("/gstore/project/nam_metadata_analysis/LTBR_scRNA/Figures/dotplot20_UP_",name, ".png"),plot = p,width = 7, height = 7, dpi = 300)  
+}
+
+
+# Create an empty list to store the result dataframes
+results_list <- list()
+
+# Loop through each element in go_enrich_mouse
+for (name in names(go_enrich_mouse)) {
+  # Check if the object is not NULL to avoid errors
+  if (!is.null(go_enrich_mouse[[name]])) {
+    # Convert the result slot of the enrichGO object to a dataframe
+    results_list[[name]] <- as.data.frame(go_enrich_mouse[[name]]@result)
+  }
+}
+
+```
+
+
+```{r}
+############## Make pathway plots
+go_enrich_mouse <- list()
+for (name in names(table_list)) {
+  for (position in c("head", "tail")) {
+    # Extract genes based on position (head or tail)
+    genes <- table_list[[name]] %>%
+      filter(PValue < 0.05) %>%
+      {if (position == "head") head(., 150) else tail(., 150)} %>%
+      pull(gene)
+
+    # Perform GO enrichment analysis for the genes
+    go_enrich_mouse[[paste0(name, "_", position)]] <- enrichGO(
+      gene         = genes,
+      OrgDb        = org.Mm.eg.db,
+      keyType      = "SYMBOL",
+      ont          = "BP",  # Biological Process
+      pvalueCutoff = 0.05,
+      qvalueCutoff = 0.05
+    )
+
+    # Create the dotplot for the enrichment results
+    p <- dotplot(go_enrich_mouse[[paste0(name, "_", position)]], showCategory = 10) +
+      ggtitle(paste0("GO Enrichment for ", toupper(position), " Genes ", name)) +
+      theme(
+        plot.title = element_text(size = 9),        # Set title size
+        axis.text = element_text(size = 6),         # Set axis text size
+        axis.title = element_text(size = 8)         # Set axis label size
+      )
+    print(p)
+  }
+}
+
+
+```
+
+
+
+
+
+
+
+
+## Dumb code
+```{r}
+#################################### MiloR
+
+
+library(miloR)
+library(SingleCellExperiment)
+library(scater)
+library(scran)
+
+# Access the meta.data slot of the Seurat object
+meta_data <- SC_LRRC15_Stroma_clean@meta.data
+# Create a new column 'Unique_ID' by combining 'group_time' and 'Hash_assignment'
+meta_data$Unique_ID <- paste(meta_data$group_time, meta_data$Hash_assignment, sep = "_")
+# Assign the updated meta.data back to the Seurat object
+SC_LRRC15_Stroma_clean@meta.data <- meta_data
+
+stroma_sce <- as.SingleCellExperiment(SC_LRRC15_Stroma_clean)
+milo.stroma <- Milo(stroma_sce)
+# Build neighborhood
+milo.stroma <- buildGraph(milo.stroma, k=20, d=30)
+milo.stroma <- makeNhoods(milo.stroma, k=20, d=30, refined=TRUE, prop=0.2)
+# Calculate distance
+milo.stroma <- calcNhoodDistance(milo.stroma, d=30)
+# Count Cells
+milo.stroma  <- countCells(milo.stroma , meta.data = data.frame(colData(milo.stroma )), samples="Unique_ID")
+# Differential 
+design.stroma <- data.frame(colData(milo.stroma))[,c("Unique_ID", "group_time", "Hash_assignment")]
+design.stroma <- distinct(design.stroma)
+rownames(design.stroma) <- design.stroma$Unique_ID
+## Reorder rownames to match columns of nhoodCounts(milo)
+design.stroma <- design.stroma[colnames(nhoodCounts(milo.stroma)), , drop=FALSE]
+
+contrast.1 <- c("group_timeLRRC15.LT_D7 - group_timeControl_D7") # define comparison
+
+# Differential analysis
+da_results <- testNhoods(milo.stroma, design = ~ 0 + group_time, design.df = design.stroma, 
+                         model.contrasts = contrast.1,fdr.weighting="graph-overlap", norm.method="TMM")
+da_results <- annotateNhoods(milo.stroma, da_results, coldata_col = "cell_labels")
+# Plot 
+milo.stroma <- buildNhoodGraph(milo.stroma)
+
+plotUMAP(milo.stroma, colour_by="cell_labels") + plotNhoodGraphDA(milo.stroma, da_results, alpha=0.05) +
+  plot_layout(guides="collect") 
+
+
+plotDAbeeswarm(groupNhoods(milo.stroma, da_results, max.lfc.delta = 0.5), group.by = "cell_labels")
+
+
+# Assuming you have a Seurat object with UMAP already calculated, transfer the coordinates to milo.stroma
+umap_coordinates <- Embeddings(SC_LRRC15_Stroma_clean, reduction = "umap")
+
+# Step 2: Store the UMAP layout in the reducedDim slot of the milo object
+reducedDim(milo.stroma, "umap") <- umap_coordinates
+
+## Find groups
+da_results <- groupNhoods(milo.stroma, da_results, max.lfc.delta = 2)
+
+plotNhoodGroups(milo.stroma, da_results, layout="umap", label = TRUE) 
+# Plot beeswarm for Nhoodgroup
+plotDAbeeswarm(da_results, "NhoodGroup")
+
+####################################
+
+
+
+
+library(scran)
+# Extract the indices of cells labeled as endothelial cells
+sce_subset <- subset(SC_LRRC15_Stroma_clean, subset = SingleR.labels  %in% c("Endothelial cells", "Fibroblasts"))
+sce_subset<- as.SingleCellExperiment(sce_subset)
+# Create a new combined grouping variable
+sce_subset$SingleR.labels <- gsub("Endothelial cells", "Endothelial_cells", sce_subset$SingleR.labels)
+
+# Create a new combined grouping variable
+sce_subset <- sce_subset[rowSums(counts(sce_subset)) > 10,]
+
+# Create the info DataFrame with mice group, cell clusters, and treatment group
+info <- DataFrame(
+  mice_group = sce_subset$Hash_assignment,         # Mice group metadata
+  cluster = sce_subset$SingleR.labels,
+  Treatment = sce_subset$group_time)        # Cell cluster labels    
+
+
+# Perform sumCountsAcrossCells based on the combined metadata
+pseudo <- sumCountsAcrossCells(sce_subset, info)
+
+# Create the design matrix
+design <- model.matrix(~ 0 + Treatment, data = pseudo@colData)
+# Define the contrasts for D7, D14, and D21
+contrast <- makeContrasts(
+  LRRC15_vs_Control_D7 = TreatmentLRRC15.LT_D7 - TreatmentControl_D7,
+  LRRC15_vs_Control_D14 = TreatmentLRRC15.LT_D14 - TreatmentControl_D14,
+  LRRC15_vs_Control_D21 = TreatmentLRRC15.LT_D21 - TreatmentControl_D21,
+  levels = design
+)
+
+# Loop over the contrast matrix columns
+results_list <- lapply(colnames(contrast), function(contrast_name) {
+  
+  # Extract the current contrast vector
+  current_contrast <- contrast[, contrast_name]
+  
+  # Apply pseudoBulkDGE for the current contrast
+  result <- pseudoBulkDGE(pseudo, 
+                          label = pseudo$cluster,  
+                          design = ~ Treatment,  
+                          contrast = current_contrast,
+                          method = "edgeR")
+  
+  # Store the result along with the contrast name
+  return(list(contrast = contrast_name, result = result))
+})
+
+# Access the results
+ names(results_list) <- colnames(contrast)
+
+
+## replace DE table
+df2_D21 <- as.data.frame(results_list[["LRRC15_vs_Control_D21"]][["result"]]@listData[["Endothelial_cells"]]@listData)
+df2_D21$name <- row.names(pseudo)
+df_D7 <- df_D7 %>%
+    mutate(combined_score = sign(logFC) * -log10(PValue))
+## Filter top genes
+top_genes <- df_DE  %>%
+  filter(PValue < 0.01 ) %>%  # Filter significant genes
+  arrange(PValue) %>%            # Sort by p-value
+  slice_head(n = 50)  
+## Volcano plot
+
+ggplot(df_DE, aes(x = logFC, y = -log10(PValue))) +
+  geom_point(aes(color = PValue < 0.01), size = 0.5) +
+  geom_text_repel(data = top_genes, aes(label = genes), size = 2.5, max.overlaps = 100) +
+  theme_minimal() +
+  ggtitle("Day 14 Treatment vs Control")
+
+
+# Merge df1 and df2 by the common column 'ID'
+merged_df <- merge(df_D7[,c(7,6)], df_D14[,c(7,6)], by = "name", all = TRUE)
+
+# Merge the result with df3 by the common column 'ID'
+merged_df <- merge(merged_df, df_D21[,c(7,6)], by = "name", all = TRUE)
+
+# Calculate the row-wise mean of Value1, Value2, and Value3, ignoring NA values
+merged_df$Average <- rowMeans(merged_df[, c("combined_score.x", "combined_score.y","combined_score")], 
+                              na.rm = TRUE)
+
+```
+
+
+
+
+
